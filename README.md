@@ -1,107 +1,182 @@
 # 🏥 Healthcare Question Answering System with RAG Pipeline
 
-> **Status:** 🚧 Codebase being rebuilt — original lost in laptop failure. Architecture, design, and results documented below.
+> ✅ **Status:** Working MVP — runs locally end-to-end. FastAPI server, FAISS vector store, Sentence-BERT embeddings, and Groq/OpenAI-ready LLM layer.
 
-An intelligent **medical question answering system** built on **Retrieval-Augmented Generation (RAG)**, combining **BERT** for query understanding, **FAISS** for semantic search, and **GPT** for grounded response generation — served via **FastAPI**.
+A medical question-answering system built on **Retrieval-Augmented Generation (RAG)**. Combines **Sentence-BERT** for semantic search, **FAISS** for fast vector retrieval, and a configurable **LLM** (Groq / OpenAI) for grounded, citation-backed answers — served via **FastAPI**.
 
-![Python](https://img.shields.io/badge/Python-3776AB?style=flat&logo=python&logoColor=white)
-![BERT](https://img.shields.io/badge/BERT-FFD21E?style=flat&logoColor=black)
-![OpenAI](https://img.shields.io/badge/OpenAI_GPT-412991?style=flat&logo=openai&logoColor=white)
-![FAISS](https://img.shields.io/badge/FAISS-0084FF?style=flat&logo=meta&logoColor=white)
-![Transformers](https://img.shields.io/badge/🤗_Transformers-FFD21E?style=flat&logoColor=black)
-![FastAPI](https://img.shields.io/badge/FastAPI-009688?style=flat&logo=fastapi&logoColor=white)
-![Status](https://img.shields.io/badge/status-rebuilding-yellow)
+![Python](https://img.shields.io/badge/Python-3.13-3776AB?logo=python&logoColor=white)
+![FastAPI](https://img.shields.io/badge/FastAPI-009688?logo=fastapi&logoColor=white)
+![FAISS](https://img.shields.io/badge/FAISS-0084FF?logo=meta&logoColor=white)
+![Sentence-Transformers](https://img.shields.io/badge/Sentence--Transformers-FFD21E?logoColor=black)
+![Groq](https://img.shields.io/badge/Groq-F55036?logoColor=white)
+![Status](https://img.shields.io/badge/status-MVP_working-brightgreen)
 
 ---
 
-## 🎯 Problem
+## ✨ What it does
 
-Healthcare information is dense, domain-specific, and rapidly evolving. Patients and clinicians need:
-- **Accurate, context-grounded answers** to medical questions
-- A system that retrieves from **trusted sources** (medical articles, FAQs) instead of hallucinating
-- Real-time response delivery via a clean API
+Ask a medical question → the system embeds it, retrieves the most relevant chunks from a curated knowledge base via FAISS, then asks an LLM to generate a grounded answer that **cites its sources**.
 
-LLMs alone hallucinate medical facts. **RAG fixes this** by grounding the model in a curated knowledge base.
+```
+You: "What are the symptoms of type 2 diabetes?"
+
+System:
+  → embeds the question
+  → retrieves top-K chunks from FAISS  (top hit: score 0.81)
+  → LLM generates a grounded answer with [Source: ...] citations
+  → returns answer + raw retrieved passages for transparency
+```
 
 ## 🏗️ Architecture
 
 ```
-┌────────────────┐    ┌──────────────┐    ┌───────────────────┐    ┌──────────┐
-│  Medical Docs  │ ─► │  Cleaning &  │ ─► │  Embedding        │ ─► │  FAISS   │
-│  (Articles,    │    │  Chunking    │    │  (Sentence-BERT)  │    │  Index   │
-│   FAQs, PDFs)  │    └──────────────┘    └───────────────────┘    └─────┬────┘
-└────────────────┘                                                        │
+┌────────────────┐    ┌──────────────┐    ┌────────────────────┐    ┌───────────┐
+│  Medical FAQs  │ ─► │  Chunking    │ ─► │  Sentence-BERT     │ ─► │  FAISS    │
+│  (JSON corpus) │    │  (overlap)   │    │  Embeddings (384d) │    │  Index    │
+└────────────────┘    └──────────────┘    └────────────────────┘    └─────┬─────┘
                                                                           │
    User Query                                                             │
        │                                                                  │
        ▼                                                                  │
 ┌──────────────┐    ┌──────────────────┐    ┌────────────────┐            │
-│  BERT        │ ─► │  Semantic Search │ ◄──┤ Top-K Retrieve │ ◄──────────┘
-│  (Intent +   │    │  (Query Embed)   │    └────────┬───────┘
-│   Context)   │    └──────────────────┘             │
-└──────────────┘                                     ▼
-                                          ┌──────────────────┐
-                                          │  GPT             │
-                                          │  Context-aware   │
-                                          │  Answer Gen      │
-                                          └────────┬─────────┘
-                                                   │
-                                                   ▼
-                                          ┌──────────────────┐
-                                          │  FastAPI         │
-                                          │  REST Endpoint   │
-                                          └──────────────────┘
+│  Embed Query │ ─► │  Top-K Search    │ ◄──┤ FAISS Retrieve │ ◄──────────┘
+└──────────────┘    └────────┬─────────┘    └────────────────┘
+                             │
+                             ▼
+                   ┌─────────────────────┐
+                   │  LLM (Groq/OpenAI)  │
+                   │  Grounded answer    │
+                   │  + source citations │
+                   └─────────┬───────────┘
+                             │
+                             ▼
+                   ┌─────────────────────┐
+                   │  FastAPI /ask       │
+                   │  → JSON response    │
+                   └─────────────────────┘
+```
+
+## 📂 Project Structure
+
+```
+healthcare-qa-rag/
+├── app/
+│   ├── config.py         # Paths, model names, hyperparameters
+│   ├── chunking.py       # Sentence-aware chunking with overlap
+│   ├── embeddings.py     # Sentence-BERT encoder
+│   ├── vectorstore.py    # FAISS wrapper (build/save/load/search)
+│   ├── llm.py            # Groq client + grounded prompt
+│   ├── rag.py            # Orchestrates: embed → retrieve → generate
+│   └── main.py           # FastAPI app (/ask, /health, /docs)
+├── scripts/
+│   └── build_index.py    # CLI: build FAISS index from corpus
+├── data/
+│   ├── medical_faqs.json # Curated medical knowledge base
+│   └── index/            # Generated FAISS index + chunks
+├── requirements.txt
+└── .env.example
 ```
 
 ## ⚙️ Tech Stack
 
-| Layer            | Technology                                    |
-|------------------|-----------------------------------------------|
-| Language         | Python 3.10+                                  |
-| Query understanding | BERT (Hugging Face Transformers)           |
-| Embeddings       | Sentence-BERT                                 |
-| Vector store     | FAISS                                         |
-| Generative model | OpenAI GPT (configurable)                     |
-| API layer        | FastAPI                                       |
-| Doc processing   | PyPDF2 · BeautifulSoup · LangChain text-splitter |
+| Layer            | Choice                              | Why |
+|------------------|-------------------------------------|------|
+| Embeddings       | `all-MiniLM-L6-v2` (384-dim)        | Fast, small, strong baseline |
+| Vector Store     | FAISS `IndexFlatIP`                 | Cosine sim via inner product on normalized vectors |
+| LLM              | Groq (LLaMA 3.3 70B)                | Free tier, blazing fast inference |
+| API Server       | FastAPI + Uvicorn                   | Async, auto-docs, production-ready |
+| Chunking         | Sentence-aware with 60-word overlap | Preserves context across boundaries |
 
-## 🔁 Pipeline Stages
+## 🚀 Quick Start
 
-1. **Document Ingestion** — Medical articles, FAQs, and clinical resources collected as raw documents.
-2. **Cleaning & Chunking** — Strip noise; split into semantically coherent chunks (~256–512 tokens).
-3. **Embedding Generation** — Encode each chunk with Sentence-BERT into dense vectors.
-4. **Indexing** — Store embeddings in FAISS for sub-second nearest-neighbor search.
-5. **Query Understanding** — BERT classifies user intent and extracts contextual signals.
-6. **Retrieval** — Top-K most relevant chunks fetched from FAISS.
-7. **Generation** — Retrieved chunks passed as context to GPT, which produces a grounded answer with citations.
-8. **API Delivery** — FastAPI exposes `/ask` endpoint for real-time question answering.
+### 1. Setup
 
-## 🧠 Key Engineering Decisions
+```bash
+git clone https://github.com/TJA23/healthcare-qa-rag.git
+cd healthcare-qa-rag
+python3.13 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+```
 
-- **RAG over fine-tuning** — medical knowledge updates frequently; fine-tuning is expensive and stale.
-- **BERT for intent + Sentence-BERT for retrieval** — separates *understanding* from *matching*, improving answer relevance.
-- **Chunking strategy** — overlap of 50 tokens preserves context across chunk boundaries.
-- **FastAPI** — async support and auto-generated OpenAPI docs make it ideal for ML serving.
+### 2. (Optional) Add Groq API key for full LLM answers
 
-## 📊 Outcomes
+Get a free key at https://console.groq.com → copy `.env.example` to `.env` → paste your key.
+Without a key, the system still works and returns the top retrieved passages.
 
-- Built an **intelligent healthcare QA system** delivering accurate, context-aware medical responses.
-- Designed a **document ingestion pipeline** with cleaning, chunking, and embedding generation.
-- Implemented **semantic search via FAISS** for relevant context retrieval before answer generation.
-- Leveraged **BERT for query understanding** and **GPT for grounded response generation**.
-- Exposed real-time QA via **FastAPI REST endpoints**.
+```bash
+cp .env.example .env
+# edit .env: GROQ_API_KEY=gsk_...
+```
 
-## 🔮 Future Work
+### 3. Build the index
 
-- Add citation/source highlighting in responses.
-- Domain-adapt embeddings using **BioBERT** / **PubMedBERT**.
-- Multi-turn conversational memory.
-- Guardrails for harmful or out-of-scope medical advice.
-- Streamlit / React UI for clinicians.
+```bash
+python -m scripts.build_index
+# → 15 chunks, 384-dim vectors, saved to data/index/
+```
+
+### 4. Run the API
+
+```bash
+uvicorn app.main:app --reload --port 8000
+```
+
+Open http://localhost:8000/docs for the interactive Swagger UI.
+
+### 5. Ask a question
+
+```bash
+curl -X POST http://localhost:8000/ask \
+  -H "Content-Type: application/json" \
+  -d '{"question": "What are the warning signs of a stroke?", "top_k": 3}'
+```
+
+Sample response:
+
+```json
+{
+  "question": "What are the warning signs of a stroke?",
+  "answer": "The warning signs of a stroke can be remembered using the FAST acronym...
+             [Source: What are the warning signs of a stroke?]
+             ...This is general information, not medical advice.",
+  "sources": [
+    {"title": "What are the warning signs of a stroke?", "score": 0.81, "text": "..."},
+    {"title": "What causes migraines?", "score": 0.31, "text": "..."}
+  ]
+}
+```
+
+## 🧠 Key Design Decisions
+
+- **Normalized embeddings + Inner Product** — equivalent to cosine similarity but faster, works directly with FAISS `IndexFlatIP`.
+- **Sentence-aware chunking** — splits on sentence boundaries with overlap, preserving semantic continuity.
+- **LLM-optional retrieval** — system gracefully degrades to returning raw retrieved passages if no LLM key is set, so the retrieval layer is independently testable.
+- **Grounded prompt with citation requirement** — the LLM is explicitly instructed to use only the provided context and cite sources, reducing hallucination risk.
+- **Disclaimer enforced at prompt level** — every answer ends with the medical-advice disclaimer.
+
+## 📊 Sample Retrieval Results
+
+| Query                                    | Top match (score) |
+|------------------------------------------|-------------------|
+| "What are the symptoms of type 2 diabetes?" | 0.81 ✅ correct FAQ |
+| "What are the warning signs of a stroke?"   | 0.63 ✅ correct FAQ |
+| "How does the flu vaccine work?"            | retrieves influenza vaccine FAQ |
+
+## 🔮 Roadmap
+
+- [ ] Domain-adapt embeddings with **BioBERT** / **PubMedBERT**
+- [ ] Add **citation highlighting** in API responses
+- [ ] Cross-encoder **re-ranking** of top-K
+- [ ] **Multi-turn** conversation memory
+- [ ] **Streamlit** UI for interactive use
+- [ ] **Evaluation harness** (faithfulness, answer relevance)
+- [ ] **Guardrails** for harmful / out-of-scope queries
+- [ ] **Dockerize** for deployment
 
 ## ⚠️ Disclaimer
 
-This is a research / educational project. Outputs are **not a substitute for professional medical advice**. Always consult a qualified healthcare professional.
+This is a **research and educational project**. Outputs are **NOT a substitute for professional medical advice**. Always consult a qualified healthcare professional for medical decisions.
 
 ## 👤 Author
 
